@@ -74,4 +74,4 @@ Az első futtatáskor a program megnyit egy böngészőt a Google hitelesítésh
 Windows alatt ajánlott a **Feladatütemező (Task Scheduler)** használata a napi mentésekhez. Linux alatt a **crontab** segítségével ütemezhető a futtatás.
 
 ---
-Készítette: bgrob
+Készítette: rb98t
