@@ -1,0 +1,24 @@
+{
+  "backup_sources": [
+    "C:\\path\\to\\your\\server1",
+    "C:\\path\\to\\your\\server2"
+  ],
+  "exclude_patterns": [
+    "cache",
+    "logs",
+    "libraries"
+  ],
+  "mysql": {
+    "enabled": false,
+    "host": "localhost",
+    "port": 3306,
+    "user": "root",
+    "password": "your_password",
+    "databases": [
+      "your_database_name"
+    ]
+  },
+  "drive_folder_id": "YOUR_GOOGLE_DRIVE_FOLDER_ID",
+  "retention_days": 10,
+  "temp_zip_folder": "temp"
+}
