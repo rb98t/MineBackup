@@ -26,7 +26,7 @@ from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
-from googleapiclient.http import MediaFileUpload
+from googleapiclient.http import MediaFileUpload, MediaIoBaseUpload
 
 # Engedélyek a Google Drive fájlok kezeléséhez
 SCOPES = ['https://www.googleapis.com/auth/drive.file']
@@ -286,23 +286,24 @@ def upload_file(service: Any, filepath: str, folder_id: str) -> bool:
     logging.info(f"Feltöltés indítása: {filename} ({file_size} bytes)")
     
     try:
-        media = MediaFileUpload(str(file_path), mimetype='application/zip', resumable=True, chunksize=50*1024*1024)
-        request = service.files().create(body=file_metadata, media_body=media, fields='id')
-        
-        response = None
-        previous_progress = 0
-        
-        with tqdm(total=file_size, unit='B', unit_scale=True, unit_divisor=1024, 
-                  desc=f"Feltöltés: {filename[:20]:<20}", leave=True, 
-                  ascii=" #", bar_format="{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]") as pbar:
-            while response is None:
-                status, response = request.next_chunk()
-                if status:
-                    current_progress = int(status.resumable_progress)
-                    pbar.update(current_progress - previous_progress)
-                    previous_progress = current_progress
+        with open(file_path, 'rb') as f:
+            media = MediaIoBaseUpload(f, mimetype='application/zip', resumable=True, chunksize=50*1024*1024)
+            request = service.files().create(body=file_metadata, media_body=media, fields='id')
             
-            pbar.update(file_size - previous_progress)
+            response = None
+            previous_progress = 0
+            
+            with tqdm(total=file_size, unit='B', unit_scale=True, unit_divisor=1024, 
+                      desc=f"Feltöltés: {filename[:20]:<20}", leave=True, 
+                      ascii=" #", bar_format="{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]") as pbar:
+                while response is None:
+                    status, response = request.next_chunk()
+                    if status:
+                        current_progress = int(status.resumable_progress)
+                        pbar.update(current_progress - previous_progress)
+                        previous_progress = current_progress
+                
+                pbar.update(file_size - previous_progress)
                 
         logging.info(f"Feltöltés befejezve: {filename}. Fájl ID: {response.get('id')}")
         return True
@@ -474,22 +475,23 @@ def main() -> None:
         
         try:
             # 100 MB-os szeletek a még kevesebb várakozás érdekében
-            media = MediaFileUpload(str(file_path), mimetype='application/zip', resumable=True, chunksize=100*1024*1024)
-            request = thread_service.files().create(body=file_metadata, media_body=media, fields='id')
-            
-            response = None
-            previous_progress = 0
-            
-            with tqdm(total=file_size, unit='B', unit_scale=True, unit_divisor=1024, 
-                      desc=f"Feltöltés: {filename[:20]:<20}", leave=True, position=pos, 
-                      ascii=" #", bar_format="{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]") as pbar:
-                while response is None:
-                    status, response = request.next_chunk()
-                    if status:
-                        current_progress = int(status.resumable_progress)
-                        pbar.update(current_progress - previous_progress)
-                        previous_progress = current_progress
-                pbar.update(file_size - previous_progress)
+            with open(file_path, 'rb') as f:
+                media = MediaIoBaseUpload(f, mimetype='application/zip', resumable=True, chunksize=100*1024*1024)
+                request = thread_service.files().create(body=file_metadata, media_body=media, fields='id')
+                
+                response = None
+                previous_progress = 0
+                
+                with tqdm(total=file_size, unit='B', unit_scale=True, unit_divisor=1024, 
+                          desc=f"Feltöltés: {filename[:20]:<20}", leave=True, position=pos, 
+                          ascii=" #", bar_format="{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]") as pbar:
+                    while response is None:
+                        status, response = request.next_chunk()
+                        if status:
+                            current_progress = int(status.resumable_progress)
+                            pbar.update(current_progress - previous_progress)
+                            previous_progress = current_progress
+                    pbar.update(file_size - previous_progress)
             
             logging.info(f"Feltöltés befejezve: {filename}")
             file_path.unlink() 
