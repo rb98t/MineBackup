@@ -1,77 +1,47 @@
-# MineBackup - Automata Minecraft Szerver Mentő
+# MineBackup - .NET 10 Minecraft Biztonsági Mentő
 
-A MineBackup egy Python alapú eszköz, amely segítségével automatikusan készíthetsz biztonsági mentéseket Minecraft szervereidről és a hozzájuk tartozó MySQL adatbázisokról, majd ezeket feltöltheted a Google Drive-ra.
+A MineBackup egy modern, nagy teljesítményű biztonsági mentési megoldás Minecraft szerverekhez. A projekt nemrégiben teljes refaktoráláson esett át: a korábbi Python implementációt egy natív **.NET 10** alapú, párhuzamosított megoldás váltotta fel.
 
-## Főbb jellemzők
+## ✨ Főbb Jellemzők
 
-- **Párhuzamos tömörítés:** Több szervermappa egyidejű tömörítése a gyorsabb mentés érdekében.
-- **MySQL mentés:** Adatbázis sémák és adatok kimentése (INSERT chunking a memória kímélése érdekében).
-- **Google Drive integráció:** Automatikus feltöltés közvetlenül a felhőbe.
-- **Resumable Upload:** Nagy méretű fájlok (akár több GB) stabil feltöltése megszakadás esetén is.
-- **Megtartási politika (Retention):** A beállított időnél régebbi mentések automatikus törlése a Google Drive-ról.
-- **Kizárási minták:** Megadhatók mappák vagy fájlok (pl. `logs`, `cache`), amiket nem szeretnél a mentésbe foglalni.
-- **Naplózás:** Részletes log fájlok készülnek minden futásról a `logs` mappába.
+*   **Párhuzamosított Pipeline**: A tömörítés és a feltöltés szimultán történik minden forráshoz, kihasználva a többszálas CPU-k erejét.
+*   **Google Drive Integráció**: Automatikus feltöltés a felhőbe, hitelesítés után.
+*   **Félbehagyott mentések folytatása**: Ha a folyamat megszakad, a következő indításnál automatikusan felismeri és befejezi a temp mappában maradt mentések feltöltését.
+*   **Adatbázis Mentés**: Natív MySQL/MariaDB dump támogatás (táblánkénti feldolgozás, alacsony RAM használat).
+*   **Modern CLI**: Látványos, valós idejű folyamatjelzők (Spectre.Console), átviteli sebesség méréssel és hátralévő idő becsléssel.
+*   **Automatikus Karbantartás**: A beállított megőrzési idő (Retention Days) alapján automatikusan törli a régi mentéseket a Drive-ról.
+*   **Surgical Cleanup**: A helyi ideiglenes fájlok a sikeres feltöltés után azonnal törlődnek.
 
-## Előfeltételek
+## 🛠️ Előfeltételek
 
-- Python 3.11 vagy újabb
-- Google Cloud Projekt (Drive API engedélyezve)
-- `credentials.json` fájl a Google Cloud Console-ból
+*   **.NET 10 SDK** (vagy futtatókörnyezet)
+*   Google Cloud projekt OAuth2 kliens azonosítóval (`credentials.json`)
+*   MySQL/MariaDB hozzáférés (ha adatbázis mentés is szükséges)
 
-## Gyors telepítés
+## 🚀 Telepítés és Beállítás
 
-1. Klónozd vagy töltsd le a tárolót.
-2. Telepítsd a szükséges függőségeket:
-   ```bash
-   pip install -r requirements.txt
-   ```
-3. Másold a `credentials.json` fájlt a gyökérkönyvtárba.
-4. Állítsd be a `config.json` fájlt a saját elérési útjaidra és a Google Drive mappa azonosítódra.
+1.  **Klónozd a repository-t.**
+2.  **Google API beállítása**:
+    *   Hozd létre a projektet a [Google Cloud Console](https://console.cloud.google.com/)-ban.
+    *   Engedélyezd a **Google Drive API**-t.
+    *   Hozz létre egy **OAuth client ID**-t (Desktop app), töltsd le a JSON-t, és mentsd el a projekt gyökerébe `credentials.json` néven.
+3.  **Konfiguráció**:
+    *   Másold le a `config.json` fájlt (vagy hozd létre).
+    *   Állítsd be a `drive_folder_id`-t (a Google Drive mappa azonosítója a böngésző URL-jéből).
+    *   Add meg a mentendő szerver mappákat a `backup_sources` listában.
+4.  **Indítás**:
+    ```bash
+    dotnet run
+    ```
+    (Az első indításkor megnyílik a böngésző a hitelesítéshez).
 
-A részletes beállítási útmutatót a [SETUP.md](SETUP.md) fájlban találod.
+## 📅 Ütemezés (Windows)
 
-## Konfiguráció (config.json)
+Javasolt a Windows Feladatütemező használata:
+*   **Program/parancsfájl**: `dotnet`
+*   **Argumentumok**: `run --project "C:\útvonal\a\MineBackup.csproj"`
+*   **Kezdés helye**: Az alkalmazás mappája.
 
-```json
-{
-  "backup_sources": [
-    "C:\\Minecraft\\Survival_Server",
-    "C:\\Minecraft\\Lobby_Server"
-  ],
-  "exclude_patterns": [
-    "cache",
-    "logs",
-    "libraries"
-  ],
-  "mysql": {
-    "enabled": true,
-    "host": "localhost",
-    "port": 3306,
-    "user": "root",
-    "password": "jelszo",
-    "databases": [
-      "minecraft_db"
-    ]
-  },
-  "drive_folder_id": "GOOGLE_DRIVE_MAPPA_ID",
-  "retention_days": 10,
-  "temp_zip_folder": "temp"
-}
-```
+## 📄 Licenc
 
-## Használat
-
-A mentés manuális indításához futtasd a fő szkriptet:
-
-```bash
-python backup.py
-```
-
-Az első futtatáskor a program megnyit egy böngészőt a Google hitelesítéshez. Ezután egy `token.json` fájl jön létre, így a további futtatások már teljesen automatikusan, beavatkozás nélkül történnek.
-
-## Automatizálás
-
-Windows alatt ajánlott a **Feladatütemező (Task Scheduler)** használata a napi mentésekhez. Linux alatt a **crontab** segítségével ütemezhető a futtatás.
-
----
-Készítette: bgrob
+Ez a projekt saját használatra készült, de szabadon módosítható.
