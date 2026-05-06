@@ -1,7 +1,6 @@
 # MineBackup - .NET 10 Minecraft Biztonsági Mentő
 
-A MineBackup egy modern, nagy teljesítményű biztonsági mentési megoldás Minecraft szerverekhez. A projekt nemrégiben teljes refaktoráláson esett át: a korábbi Python implementációt egy natív **.NET 10** alapú, párhuzamosított megoldás váltotta fel.
-
+A MineBackup egy modern, nagy teljesítményű biztonsági mentési megoldás Minecraft szerverekhez.
 ## ✨ Főbb Jellemzők
 
 *   **Párhuzamosított Pipeline**: A tömörítés és a feltöltés szimultán történik minden forráshoz, kihasználva a többszálas CPU-k erejét.
