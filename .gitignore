@@ -1,0 +1,18 @@
+# Build and output
+bin/
+obj/
+
+# IDE settings
+.idea/
+.vs/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# Secrets and tokens
+token.json
+credentials.json
+
+# Local config overrides
+config.json
