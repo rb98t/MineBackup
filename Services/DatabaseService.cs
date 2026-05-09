@@ -1,4 +1,3 @@
-using System.Data;
 using System.IO.Compression;
 using System.Text;
 using Microsoft.Extensions.Logging;
@@ -22,128 +21,54 @@ public class DatabaseService
         var timestamp = DateTime.Now.ToString("yyyy-MM-dd_HH-mm-ss");
         var zipFilename = $"DB_{dbName}_{timestamp}.zip";
         var zipPath = Path.Combine(destDir, zipFilename);
-        var tempFolder = Path.Combine(destDir, $"DB_{dbName}_{timestamp}");
+        var tempSqlFile = Path.Combine(destDir, $"{dbName}_full_backup.sql");
 
         try
         {
-            Directory.CreateDirectory(tempFolder);
-            var schemaFile = Path.Combine(tempFolder, $"{dbName}_schema.sql");
-            var dataFile = Path.Combine(tempFolder, $"{dbName}_data.sql");
+            var connString = $"Server={config.Host};Port={config.Port};User ID={config.User};Password={config.Password};Database={dbName};SslMode=None;AllowUserVariables=True;";
 
-            var connString = $"Server={config.Host};Port={config.Port};User ID={config.User};Password={config.Password};Database={dbName};SslMode=None;";
-
-            using var conn = new MySqlConnection(connString);
-            await conn.OpenAsync();
-
-            var tables = new List<string>();
-            using (var cmd = new MySqlCommand("SHOW TABLES", conn))
-            using (var reader = await cmd.ExecuteReaderAsync())
+            using (var conn = new MySqlConnection(connString))
+            using (var cmd = new MySqlCommand())
+            using (var mb = new MySqlBackup(cmd))
             {
-                while (await reader.ReadAsync())
-                {
-                    tables.Add(reader.GetString(0));
-                }
+                cmd.Connection = conn;
+                await conn.OpenAsync();
+
+                _logger.LogInformation("[{DB}] Starting industry-standard SQL dump using MySqlBackup.NET...", dbName);
+                
+                // MySqlBackup.NET handles BLOBs, UUIDs, and culture-invariant formatting correctly.
+                mb.ExportInfo.AddCreateDatabase = false;
+                mb.ExportInfo.ExportTableStructure = true;
+                mb.ExportInfo.ExportRows = true;
+                
+                // Run the export
+                mb.ExportToFile(tempSqlFile);
+                
+                _logger.LogInformation("[{DB}] SQL dump completed. Compressing...", dbName);
+                progress.Report(50);
             }
 
-            var totalSteps = tables.Count * 2;
-            var currentStep = 0;
-
-            // 1. Schema
-            using (var sw = new StreamWriter(schemaFile, false, new UTF8Encoding(false)))
-            {
-                await sw.WriteLineAsync("SET FOREIGN_KEY_CHECKS=0;");
-                foreach (var table in tables)
-                {
-                    using (var cmd = new MySqlCommand($"SHOW CREATE TABLE `{table}`", conn))
-                    using (var reader = await cmd.ExecuteReaderAsync())
-                    {
-                        if (await reader.ReadAsync())
-                        {
-                            var createStmt = reader.GetString(1);
-                            await sw.WriteLineAsync($"DROP TABLE IF EXISTS `{table}`;");
-                            await sw.WriteLineAsync($"{createStmt};");
-                            await sw.WriteLineAsync();
-                        }
-                    }
-                    currentStep++;
-                    progress.Report(currentStep * 100 / totalSteps);
-                }
-                await sw.WriteLineAsync("SET FOREIGN_KEY_CHECKS=1;");
-            }
-
-            // 2. Data
-            using (var sw = new StreamWriter(dataFile, false, new UTF8Encoding(false)))
-            {
-                await sw.WriteLineAsync("SET FOREIGN_KEY_CHECKS=0;");
-                foreach (var table in tables)
-                {
-                    using (var cmd = new MySqlCommand($"SELECT * FROM `{table}`", conn))
-                    using (var reader = await cmd.ExecuteReaderAsync(CommandBehavior.SequentialAccess))
-                    {
-                        var hasData = false;
-                        var columns = new List<string>();
-                        for (int i = 0; i < reader.FieldCount; i++) columns.Add($"`{reader.GetName(i)}`");
-                        var colsStr = string.Join(", ", columns);
-
-                        while (await reader.ReadAsync())
-                        {
-                            if (!hasData)
-                            {
-                                await sw.WriteLineAsync($"INSERT INTO `{table}` ({colsStr}) VALUES");
-                                hasData = true;
-                            }
-                            else
-                            {
-                                await sw.WriteLineAsync(",");
-                            }
-
-                            var vals = new List<string>();
-                            for (int i = 0; i < reader.FieldCount; i++)
-                            {
-                                if (await reader.IsDBNullAsync(i)) vals.Add("NULL");
-                                else
-                                {
-                                    var val = reader.GetValue(i);
-                                    vals.Add(FormatValue(val));
-                                }
-                            }
-                            await sw.WriteAsync($"({string.Join(", ", vals)})");
-                        }
-
-                        if (hasData) await sw.WriteLineAsync(";");
-                    }
-                    currentStep++;
-                    progress.Report(currentStep * 100 / totalSteps);
-                }
-                await sw.WriteLineAsync("SET FOREIGN_KEY_CHECKS=1;");
-            }
-
-            // ZIP
+            // ZIP the single SQL file
+            if (File.Exists(zipPath)) File.Delete(zipPath);
             using (var zipFile = File.Create(zipPath))
             using (var archive = new ZipArchive(zipFile, ZipArchiveMode.Create))
             {
-                archive.CreateEntryFromFile(schemaFile, $"{dbName}_schema.sql");
-                archive.CreateEntryFromFile(dataFile, $"{dbName}_data.sql");
+                archive.CreateEntryFromFile(tempSqlFile, $"{dbName}_full_backup.sql");
             }
 
-            Directory.Delete(tempFolder, true);
+            // Cleanup temp SQL file
+            if (File.Exists(tempSqlFile)) File.Delete(tempSqlFile);
+
+            progress.Report(100);
+            _logger.LogInformation("[{DB}] Backup ZIP created: {Path}", dbName, zipPath);
             return zipPath;
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "[{DB}] Error during database backup", dbName);
-            if (Directory.Exists(tempFolder)) Directory.Delete(tempFolder, true);
+            _logger.LogError(ex, "[{DB}] Error during standardized database backup", dbName);
+            if (File.Exists(tempSqlFile)) File.Delete(tempSqlFile);
             if (File.Exists(zipPath)) File.Delete(zipPath);
             return null;
         }
-    }
-
-    private string FormatValue(object val)
-    {
-        if (val is string s) return $"'{MySqlHelper.EscapeString(s)}'";
-        if (val is DateTime dt) return $"'{dt:yyyy-MM-dd HH:mm:ss}'";
-        if (val is byte[] b) return $"X'{Convert.ToHexString(b)}'";
-        if (val is bool bl) return bl ? "1" : "0";
-        return val.ToString() ?? "NULL";
     }
 }

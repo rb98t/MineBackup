@@ -88,35 +88,38 @@ public class BackupManager(
                 var tasks = new List<Task>();
 
                 // Server tasks (Zip + Upload)
-                foreach (var source in config.BackupSources)
+                if (config.FilesBackupEnabled)
                 {
-                    var name = new DirectoryInfo(source).Name;
-                    tasks.Add(Task.Run(async () =>
+                    foreach (var source in config.BackupSources)
                     {
-                        var task = ctx.AddTask($"Szerver tömörítés: {name}");
-                        var zipPath = await zipService.ZipDirectoryAsync(source, tempPath, config.ExcludePatterns, new Progress<int>(p => 
+                        var name = new DirectoryInfo(source).Name;
+                        tasks.Add(Task.Run(async () =>
                         {
-                            // Zip progress 0-50%
-                            task.Value = p / 2.0;
-                        }));
-
-                        if (zipPath != null && File.Exists(zipPath))
-                        {
-                            var fileSize = new FileInfo(zipPath).Length;
-                            task.Description = $"Feltöltés: {name}";
-                            var success = await driveService.UploadFileAsync(zipPath, config.DriveFolderId, new Progress<long>(p => 
+                            var task = ctx.AddTask($"Szerver tömörítés: {name}");
+                            var zipPath = await zipService.ZipDirectoryAsync(source, tempPath, config.ExcludePatterns, new Progress<int>(p => 
                             {
-                                // Upload progress 50-100%
-                                if (fileSize > 0)
-                                {
-                                    task.Value = 50 + (p * 50.0 / fileSize);
-                                }
+                                // Zip progress 0-50%
+                                task.Value = p / 2.0;
                             }));
-                            if (success) File.Delete(zipPath);
-                        }
-                        task.Value = 100;
-                        task.Description = $"Kész: {name}";
-                    }));
+
+                            if (zipPath != null && File.Exists(zipPath))
+                            {
+                                var fileSize = new FileInfo(zipPath).Length;
+                                task.Description = $"Feltöltés: {name}";
+                                var success = await driveService.UploadFileAsync(zipPath, config.DriveFolderId, new Progress<long>(p => 
+                                {
+                                    // Upload progress 50-100%
+                                    if (fileSize > 0)
+                                    {
+                                        task.Value = 50 + (p * 50.0 / fileSize);
+                                    }
+                                }));
+                                if (success) File.Delete(zipPath);
+                            }
+                            task.Value = 100;
+                            task.Description = $"Kész: {name}";
+                        }));
+                    }
                 }
 
                 // DB tasks (Dump + Upload)

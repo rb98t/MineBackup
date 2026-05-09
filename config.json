@@ -3,6 +3,7 @@
     "C:\\path\\to\\your\\server1",
     "C:\\path\\to\\your\\server2"
   ],
+  "files_backup_enabled": true,
   "exclude_patterns": [
     "cache",
     "logs",

@@ -7,6 +7,9 @@ public class AppConfig
     [JsonPropertyName("backup_sources")]
     public List<string> BackupSources { get; set; } = new();
 
+    [JsonPropertyName("files_backup_enabled")]
+    public bool FilesBackupEnabled { get; set; } = true;
+
     [JsonPropertyName("exclude_patterns")]
     public List<string> ExcludePatterns { get; set; } = new();
 
