@@ -39,11 +39,20 @@ public class ZipService
                 foreach (var file in files)
                 {
                     var relativePath = Path.GetRelativePath(sourcePath, file);
-                    var entryName = Path.Combine(dirName, relativePath);
+                    // Standardize ZIP paths to use forward slashes and include the top-level directory
+                    var entryName = Path.Combine(dirName, relativePath).Replace(Path.DirectorySeparatorChar, '/');
 
                     try
                     {
-                        archive.CreateEntryFromFile(file, entryName);
+                        // Use FileShare.ReadWrite to allow zipping files even if the server is currently using them
+                        using (var stream = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+                        {
+                            var entry = archive.CreateEntry(entryName, CompressionLevel.Optimal);
+                            using (var entryStream = entry.Open())
+                            {
+                                await stream.CopyToAsync(entryStream);
+                            }
+                        }
                     }
                     catch (Exception ex)
                     {
