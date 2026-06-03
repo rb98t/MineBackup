@@ -12,15 +12,16 @@ public class ZipService
         _logger = logger;
     }
 
-    public async Task<string?> ZipDirectoryAsync(string sourceDir, string destDir, List<string> excludePatterns, IProgress<int> progress)
+    public async Task<string?> ZipDirectoryAsync(string sourceDir, string destDir, List<string> excludePatterns, IProgress<int> progress, string? customPrefix = null)
     {
         var sourcePath = Path.GetFullPath(sourceDir);
         var dirName = new DirectoryInfo(sourcePath).Name;
+        var prefix = customPrefix ?? dirName;
         var timestamp = DateTime.Now.ToString("yyyy-MM-dd_HH-mm-ss");
-        var zipFilename = $"{dirName}_{timestamp}.zip";
+        var zipFilename = $"{prefix}_{timestamp}.zip";
         var zipPath = Path.Combine(destDir, zipFilename);
 
-        _logger.LogInformation("[{Name}] Starting compression: {Path}", dirName, zipPath);
+        _logger.LogInformation("[{Name}] Starting compression: {Path}", prefix, zipPath);
 
         try
         {
@@ -40,7 +41,7 @@ public class ZipService
                 {
                     var relativePath = Path.GetRelativePath(sourcePath, file);
                     // Standardize ZIP paths to use forward slashes and include the top-level directory
-                    var entryName = Path.Combine(dirName, relativePath).Replace(Path.DirectorySeparatorChar, '/');
+                    var entryName = Path.Combine(prefix, relativePath).Replace(Path.DirectorySeparatorChar, '/');
 
                     try
                     {
@@ -56,7 +57,7 @@ public class ZipService
                     }
                     catch (Exception ex)
                     {
-                        _logger.LogWarning(ex, "[{Name}] Skipping file (access denied): {Path}", dirName, file);
+                        _logger.LogWarning(ex, "[{Name}] Skipping file (access denied): {Path}", prefix, file);
                     }
                     finally
                     {
@@ -70,7 +71,7 @@ public class ZipService
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "[{Name}] Error during compression", dirName);
+            _logger.LogError(ex, "[{Name}] Error during compression", prefix);
             if (File.Exists(zipPath)) File.Delete(zipPath);
             return null;
         }
