@@ -1,3 +1,4 @@
+using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
@@ -7,9 +8,24 @@ namespace MineBackup.Services;
 
 public class GoogleDriveService
 {
+    /// <summary>
+    /// How long before actual expiry a token is treated as stale. Google issues one-hour tokens, and a
+    /// single upload can easily straddle the boundary.
+    /// </summary>
+    private static readonly TimeSpan TokenRefreshMargin = TimeSpan.FromMinutes(5);
+
     private readonly ILogger<GoogleDriveService> _logger;
     private readonly HttpClient _httpClient;
+    private readonly SemaphoreSlim _tokenLock = new(1, 1);
+
     private string? _accessToken;
+    private DateTimeOffset _accessTokenExpiresAt;
+
+    // Captured during AuthenticateAsync so a later refresh does not have to re-read the files.
+    private string? _refreshToken;
+    private string? _clientId;
+    private string? _clientSecret;
+    private string? _tokenPath;
 
     public GoogleDriveService(ILogger<GoogleDriveService> logger, HttpClient httpClient)
     {
@@ -39,51 +55,118 @@ public class GoogleDriveService
         {
             var tokenJson = await File.ReadAllTextAsync(tokenPath);
             var tokenData = JsonSerializer.Deserialize(tokenJson, SourceGenerationContext.Default.TokenResponse);
-            
+
             if (tokenData == null) return false;
 
-            if (!string.IsNullOrEmpty(tokenData.RefreshToken) && credentialsPath != null)
+            _tokenPath = tokenPath;
+            _refreshToken = tokenData.RefreshToken;
+
+            if (credentialsPath != null)
             {
                 var credsJson = await File.ReadAllTextAsync(credentialsPath);
                 using var doc = JsonDocument.Parse(credsJson);
                 var root = doc.RootElement.GetProperty("installed");
-                var clientId = root.GetProperty("client_id").GetString();
-                var clientSecret = root.GetProperty("client_secret").GetString();
-
-                var values = new Dictionary<string, string>
-                {
-                    { "client_id", clientId! },
-                    { "client_secret", clientSecret! },
-                    { "refresh_token", tokenData.RefreshToken },
-                    { "grant_type", "refresh_token" }
-                };
-
-                var content = new FormUrlEncodedContent(values);
-                var response = await _httpClient.PostAsync("https://oauth2.googleapis.com/token", content);
-                
-                if (response.IsSuccessStatusCode)
-                {
-                    var newTokenData = await response.Content.ReadFromJsonAsync(SourceGenerationContext.Default.TokenResponse);
-                    if (newTokenData != null)
-                    {
-                        _accessToken = newTokenData.AccessToken;
-                        // Preserve refresh token
-                        if (string.IsNullOrEmpty(newTokenData.RefreshToken)) newTokenData.RefreshToken = tokenData.RefreshToken;
-                        
-                        var updatedJson = JsonSerializer.Serialize(newTokenData, SourceGenerationContext.Default.TokenResponse);
-                        await File.WriteAllTextAsync(tokenPath, updatedJson);
-                        return true;
-                    }
-                }
+                _clientId = root.GetProperty("client_id").GetString();
+                _clientSecret = root.GetProperty("client_secret").GetString();
             }
 
+            if (!string.IsNullOrEmpty(_refreshToken) && _clientId != null && _clientSecret != null
+                && await RefreshAccessTokenAsync())
+            {
+                return true;
+            }
+
+            // Fall back to whatever the file held. It may already be expired -- treat it as such so the
+            // first EnsureValidTokenAsync retries the refresh rather than firing a doomed request.
             _accessToken = tokenData.AccessToken;
-            return true;
+            _accessTokenExpiresAt = DateTimeOffset.UtcNow;
+            return !string.IsNullOrEmpty(_accessToken);
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Authentication failed");
             return false;
+        }
+    }
+
+    /// <summary>
+    /// Exchanges the refresh token for a fresh access token and persists it. Callers must hold
+    /// <see cref="_tokenLock"/> unless they are the single-threaded startup path.
+    /// </summary>
+    private async Task<bool> RefreshAccessTokenAsync()
+    {
+        if (string.IsNullOrEmpty(_refreshToken) || _clientId == null || _clientSecret == null) return false;
+
+        try
+        {
+            var values = new Dictionary<string, string>
+            {
+                { "client_id", _clientId },
+                { "client_secret", _clientSecret },
+                { "refresh_token", _refreshToken },
+                { "grant_type", "refresh_token" }
+            };
+
+            var response = await _httpClient.PostAsync(
+                "https://oauth2.googleapis.com/token", new FormUrlEncodedContent(values));
+
+            if (!response.IsSuccessStatusCode)
+            {
+                _logger.LogError("Token refresh rejected: {Status}", response.StatusCode);
+                return false;
+            }
+
+            var newTokenData = await response.Content.ReadFromJsonAsync(SourceGenerationContext.Default.TokenResponse);
+            if (newTokenData == null || string.IsNullOrEmpty(newTokenData.AccessToken)) return false;
+
+            _accessToken = newTokenData.AccessToken;
+            _accessTokenExpiresAt = DateTimeOffset.UtcNow.AddSeconds(
+                newTokenData.ExpiresIn > 0 ? newTokenData.ExpiresIn : 3600);
+
+            // A refresh response omits the refresh token; keep the one we already have.
+            if (string.IsNullOrEmpty(newTokenData.RefreshToken)) newTokenData.RefreshToken = _refreshToken;
+            _refreshToken = newTokenData.RefreshToken;
+
+            if (_tokenPath != null)
+            {
+                var updatedJson = JsonSerializer.Serialize(newTokenData, SourceGenerationContext.Default.TokenResponse);
+                await File.WriteAllTextAsync(_tokenPath, updatedJson);
+            }
+
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Token refresh failed");
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Refreshes the access token if it is close to expiry. A full daily run takes well over an hour, so
+    /// the maintenance step at the end used to fire with an expired token and fail with 401 -- meaning
+    /// retention never actually ran.
+    /// </summary>
+    private async Task<bool> EnsureValidTokenAsync()
+    {
+        if (string.IsNullOrEmpty(_accessToken)) return false;
+        if (DateTimeOffset.UtcNow < _accessTokenExpiresAt - TokenRefreshMargin) return true;
+
+        await _tokenLock.WaitAsync();
+        try
+        {
+            // Uploads run concurrently; another one may have refreshed while we waited on the lock.
+            if (DateTimeOffset.UtcNow < _accessTokenExpiresAt - TokenRefreshMargin) return true;
+
+            if (!await RefreshAccessTokenAsync())
+            {
+                _logger.LogWarning("Could not refresh the access token; continuing with the current one.");
+            }
+            return !string.IsNullOrEmpty(_accessToken);
+        }
+        finally
+        {
+            _tokenLock.Release();
         }
     }
 
@@ -131,13 +214,20 @@ public class GoogleDriveService
 
             var content = new FormUrlEncodedContent(values);
             var response = await _httpClient.PostAsync("https://oauth2.googleapis.com/token", content);
-            
+
             if (response.IsSuccessStatusCode)
             {
                 var tokenData = await response.Content.ReadFromJsonAsync(SourceGenerationContext.Default.TokenResponse);
                 if (tokenData != null)
                 {
                     _accessToken = tokenData.AccessToken;
+                    _accessTokenExpiresAt = DateTimeOffset.UtcNow.AddSeconds(
+                        tokenData.ExpiresIn > 0 ? tokenData.ExpiresIn : 3600);
+                    _refreshToken = tokenData.RefreshToken;
+                    _clientId = clientId;
+                    _clientSecret = clientSecret;
+                    _tokenPath = saveTokenPath;
+
                     var json = JsonSerializer.Serialize(tokenData, SourceGenerationContext.Default.TokenResponse);
                     await File.WriteAllTextAsync(saveTokenPath, json);
                     _logger.LogInformation("Token saved to {Path}", saveTokenPath);
@@ -161,7 +251,7 @@ public class GoogleDriveService
 
     public async Task<bool> UploadFileAsync(string filePath, string folderId, IProgress<long> progress)
     {
-        if (string.IsNullOrEmpty(_accessToken)) return false;
+        if (!await EnsureValidTokenAsync()) return false;
 
         var fileInfo = new FileInfo(filePath);
         var fileName = fileInfo.Name;
@@ -177,8 +267,13 @@ public class GoogleDriveService
             request.Content = JsonContent.Create(metadata, SourceGenerationContext.Default.UploadMetadata);
 
             var response = await _httpClient.SendAsync(request);
-            if (!response.IsSuccessStatusCode) return false;
+            if (!response.IsSuccessStatusCode)
+            {
+                _logger.LogError("Could not start upload session for {Name}: {Status}", fileName, response.StatusCode);
+                return false;
+            }
 
+            // The session URL carries its own credentials, so the chunk PUTs below outlive the access token.
             var uploadUrl = response.Headers.Location;
             if (uploadUrl == null) return false;
 
@@ -192,19 +287,34 @@ public class GoogleDriveService
             {
                 var bytesToRead = (int)Math.Min(bufferSize, fileInfo.Length - bytesUploaded);
                 var read = await fileStream.ReadAsync(buffer.AsMemory(0, bytesToRead));
+                if (read == 0)
+                {
+                    _logger.LogError("{Name} ended early at {Pos} of {Size} bytes", fileName, bytesUploaded, fileInfo.Length);
+                    return false;
+                }
 
                 var chunkContent = new ByteArrayContent(buffer, 0, read);
                 chunkContent.Headers.ContentRange = new ContentRangeHeaderValue(bytesUploaded, bytesUploaded + read - 1, fileInfo.Length);
-                
+
                 var chunkResponse = await _httpClient.PutAsync(uploadUrl, chunkContent);
-                
+
                 bytesUploaded += read;
                 progress.Report(bytesUploaded);
 
-                if (bytesUploaded < fileInfo.Length && chunkResponse.StatusCode != (System.Net.HttpStatusCode)308)
+                if (bytesUploaded < fileInfo.Length)
                 {
-                     _logger.LogError("Upload interrupted at {Pos}", bytesUploaded);
-                     return false;
+                    if (chunkResponse.StatusCode != (HttpStatusCode)308)
+                    {
+                        _logger.LogError("Upload interrupted at {Pos}", bytesUploaded);
+                        return false;
+                    }
+                }
+                else if (!chunkResponse.IsSuccessStatusCode)
+                {
+                    // The final PUT is the one that commits the file. Reporting success here would make
+                    // the caller delete the local zip, losing the backup entirely.
+                    _logger.LogError("Final chunk rejected for {Name}: {Status}", fileName, chunkResponse.StatusCode);
+                    return false;
                 }
             }
 
@@ -219,7 +329,11 @@ public class GoogleDriveService
 
     public async Task PurgeOldBackupsAsync(string folderId, int retentionDays)
     {
-        if (string.IsNullOrEmpty(_accessToken)) return;
+        if (!await EnsureValidTokenAsync())
+        {
+            _logger.LogError("Skipping maintenance: no usable access token.");
+            return;
+        }
 
         _logger.LogInformation("Checking for backups older than {Days} days...", retentionDays);
 
@@ -227,29 +341,60 @@ public class GoogleDriveService
         {
             var cutoffDate = DateTime.UtcNow.AddDays(-retentionDays);
             var cutoffStr = cutoffDate.ToString("yyyy-MM-ddTHH:mm:ssZ");
-
             var query = $"'{folderId}' in parents and modifiedTime < '{cutoffStr}' and trashed = false";
-            var url = $"https://www.googleapis.com/drive/v3/files?q={Uri.EscapeDataString(query)}&fields=files(id,name,modifiedTime)";
 
-            _httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", _accessToken);
-            var response = await _httpClient.GetFromJsonAsync(url, SourceGenerationContext.Default.FileList);
-
-            if (response?.Files != null && response.Files.Count > 0)
+            // Collect every page before deleting anything: deleting mid-pagination shifts the result set
+            // and makes nextPageToken skip entries. Previously only the first page was ever considered.
+            var stale = new List<GoogleDriveModels.File>();
+            string? pageToken = null;
+            do
             {
-                foreach (var file in response.Files)
-                {
-                    _logger.LogInformation("Deleting old backup: {Name} (Modified: {Time})", file.Name, file.ModifiedTime);
-                    await _httpClient.DeleteAsync($"https://www.googleapis.com/drive/v3/files/{file.Id}");
-                }
+                var url = $"https://www.googleapis.com/drive/v3/files?q={Uri.EscapeDataString(query)}"
+                          + "&fields=nextPageToken,files(id,name,modifiedTime)&pageSize=1000";
+                if (!string.IsNullOrEmpty(pageToken)) url += $"&pageToken={Uri.EscapeDataString(pageToken)}";
+
+                var page = await SendAuthorizedAsync(HttpMethod.Get, url);
+                page.EnsureSuccessStatusCode();
+
+                var list = await page.Content.ReadFromJsonAsync(SourceGenerationContext.Default.FileList);
+                if (list?.Files != null) stale.AddRange(list.Files);
+                pageToken = list?.NextPageToken;
             }
-            else
+            while (!string.IsNullOrEmpty(pageToken));
+
+            if (stale.Count == 0)
             {
                 _logger.LogInformation("No old backups found to delete.");
+                return;
             }
+
+            foreach (var file in stale)
+            {
+                _logger.LogInformation("Deleting old backup: {Name} (Modified: {Time})", file.Name, file.ModifiedTime);
+                var delete = await SendAuthorizedAsync(HttpMethod.Delete, $"https://www.googleapis.com/drive/v3/files/{file.Id}");
+                if (!delete.IsSuccessStatusCode)
+                {
+                    _logger.LogWarning("Could not delete {Name}: {Status}", file.Name, delete.StatusCode);
+                }
+            }
+
+            _logger.LogInformation("Maintenance finished, {Count} backup(s) removed.", stale.Count);
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Maintenance failed");
         }
+    }
+
+    /// <summary>
+    /// Sends a request with a per-call Authorization header. The HttpClient is a singleton shared with the
+    /// concurrent uploads, so setting DefaultRequestHeaders on it would race with them.
+    /// </summary>
+    private async Task<HttpResponseMessage> SendAuthorizedAsync(HttpMethod method, string url)
+    {
+        await EnsureValidTokenAsync();
+        var request = new HttpRequestMessage(method, url);
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _accessToken);
+        return await _httpClient.SendAsync(request);
     }
 }
