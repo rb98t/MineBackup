@@ -64,6 +64,7 @@ class Program
         services.AddTransient<ZipService>();
         services.AddTransient<DatabaseService>();
         services.AddTransient<GoogleDriveService>();
+        services.AddTransient<DiscordNotifier>();
         services.AddTransient<BackupManager>();
 
         // NLog configuration

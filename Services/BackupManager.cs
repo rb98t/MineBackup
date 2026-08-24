@@ -9,12 +9,16 @@ public class BackupManager(
     ConfigService configService,
     ZipService zipService,
     DatabaseService databaseService,
-    GoogleDriveService driveService)
+    GoogleDriveService driveService,
+    DiscordNotifier notifier)
 {
     /// <returns>True when every configured backup was produced and uploaded.</returns>
     public async Task<bool> RunAsync(CliOptions? options = null)
     {
         options ??= new CliOptions();
+        var startedAt = DateTimeOffset.UtcNow;
+        var outcome = new BackupOutcome();
+        string? webhookUrl = null;
 
         AnsiConsole.Write(new FigletText("MineBackup").Centered().Color(Color.Aqua));
         AnsiConsole.Write(new Rule("[bold white]Minecraft Biztonsági Mentés[/]").RuleStyle("white"));
@@ -26,6 +30,8 @@ public class BackupManager(
             AnsiConsole.MarkupLine("[red][[HIBA]][/] Nem sikerült betölteni a konfigurációt.");
             return false;
         }
+
+        webhookUrl = config.DiscordWebhookUrl;
 
         var driveFolderId = options.DriveFolderId ?? config.DriveFolderId;
         if (driveFolderId == "YOUR_GOOGLE_DRIVE_FOLDER_ID" || string.IsNullOrEmpty(driveFolderId))
@@ -55,6 +61,12 @@ public class BackupManager(
         if (!await driveService.AuthenticateAsync())
         {
             AnsiConsole.MarkupLine("[red][[HIBA]][/] Nem sikerült bejelentkezni a Google Drive-ba");
+            // Worth announcing loudly: an expired or revoked refresh token stops every backup, and
+            // recovering it needs an interactive browser login that a scheduled task cannot do.
+            outcome.Duration = DateTimeOffset.UtcNow - startedAt;
+            outcome.Description = "Nem indult el";
+            outcome.Error = "Nem sikerült bejelentkezni a Google Drive-ba. Ellenőrizd a token.json és credentials.json fájlokat.";
+            await notifier.NotifyAsync(webhookUrl, outcome);
             return false;
         }
 
@@ -91,7 +103,9 @@ public class BackupManager(
         // 2. Step: Backup & Upload
         AnsiConsole.MarkupLine("[yellow][[2/3]][/] Biztonsági mentések készítése és feltöltése...");
 
-        var failures = 0;
+        // Concurrent because every zip-and-upload runs as its own task.
+        var results = new System.Collections.Concurrent.ConcurrentBag<BackupItemResult>();
+        void Record(string name, bool success) => results.Add(new BackupItemResult { Name = name, Success = success });
 
         await AnsiConsole.Progress()
             .AutoClear(false)
@@ -132,11 +146,12 @@ public class BackupManager(
                                 task.Value = p / 2.0;
                             }), ApplyPrefix(options.Prefix, name));
 
+                            var ok = false;
                             if (zipPath != null && File.Exists(zipPath))
                             {
                                 var fileSize = new FileInfo(zipPath).Length;
                                 task.Description = $"Feltöltés: {name}";
-                                var success = await driveService.UploadFileAsync(zipPath, driveFolderId, new Progress<long>(p =>
+                                ok = await driveService.UploadFileAsync(zipPath, driveFolderId, new Progress<long>(p =>
                                 {
                                     // Upload progress 50-100%
                                     if (fileSize > 0)
@@ -144,15 +159,11 @@ public class BackupManager(
                                         task.Value = 50 + (p * 50.0 / fileSize);
                                     }
                                 }));
-                                if (success) File.Delete(zipPath);
-                                else Interlocked.Increment(ref failures);
+                                if (ok) File.Delete(zipPath);
                             }
-                            else
-                            {
-                                Interlocked.Increment(ref failures);
-                            }
+                            Record(name, ok);
                             task.Value = 100;
-                            task.Description = $"Kész: {name}";
+                            task.Description = ok ? $"Kész: {name}" : $"HIBA: {name}";
                         }));
 
                         // 2. Logok külön mentése
@@ -169,11 +180,12 @@ public class BackupManager(
                                     task.Value = p / 2.0;
                                 }), ApplyPrefix(options.Prefix, logsTaskName));
 
+                                var ok = false;
                                 if (zipPath != null && File.Exists(zipPath))
                                 {
                                     var fileSize = new FileInfo(zipPath).Length;
                                     task.Description = $"Feltöltés: {logsTaskName}";
-                                    var success = await driveService.UploadFileAsync(zipPath, driveFolderId, new Progress<long>(p =>
+                                    ok = await driveService.UploadFileAsync(zipPath, driveFolderId, new Progress<long>(p =>
                                     {
                                         // Upload progress 50-100%
                                         if (fileSize > 0)
@@ -181,15 +193,11 @@ public class BackupManager(
                                             task.Value = 50 + (p * 50.0 / fileSize);
                                         }
                                     }));
-                                    if (success) File.Delete(zipPath);
-                                    else Interlocked.Increment(ref failures);
+                                    if (ok) File.Delete(zipPath);
                                 }
-                                else
-                                {
-                                    Interlocked.Increment(ref failures);
-                                }
+                                Record(logsTaskName, ok);
                                 task.Value = 100;
-                                task.Description = $"Kész: {logsTaskName}";
+                                task.Description = ok ? $"Kész: {logsTaskName}" : $"HIBA: {logsTaskName}";
                             }));
                         }
                     }
@@ -218,11 +226,12 @@ public class BackupManager(
                                 task.Value = p / 2.0;
                             }), options.Prefix);
 
+                            var ok = false;
                             if (dumpPath != null && File.Exists(dumpPath))
                             {
                                 var fileSize = new FileInfo(dumpPath).Length;
                                 task.Description = $"Feltöltés: {db}";
-                                var success = await driveService.UploadFileAsync(dumpPath, driveFolderId, new Progress<long>(p =>
+                                ok = await driveService.UploadFileAsync(dumpPath, driveFolderId, new Progress<long>(p =>
                                 {
                                     // Upload progress 50-100%
                                     if (fileSize > 0)
@@ -230,15 +239,11 @@ public class BackupManager(
                                         task.Value = 50 + (p * 50.0 / fileSize);
                                     }
                                 }));
-                                if (success) File.Delete(dumpPath);
-                                else Interlocked.Increment(ref failures);
+                                if (ok) File.Delete(dumpPath);
                             }
-                            else
-                            {
-                                Interlocked.Increment(ref failures);
-                            }
+                            Record($"DB: {db}", ok);
                             task.Value = 100;
-                            task.Description = $"Kész: {db}";
+                            task.Description = ok ? $"Kész: {db}" : $"HIBA: {db}";
                         }));
                     }
                 }
@@ -258,10 +263,25 @@ public class BackupManager(
             await driveService.PurgeOldBackupsAsync(driveFolderId, config.RetentionDays);
         }
 
-        if (failures > 0)
+        outcome.Items.AddRange(results.OrderBy(r => r.Name));
+        outcome.Duration = DateTimeOffset.UtcNow - startedAt;
+        outcome.Success = outcome.Failed == 0;
+        outcome.Description = options.IsTargetedRun
+            ? $"Célzott futás{(string.IsNullOrEmpty(options.Prefix) ? "" : $" ({options.Prefix})")}"
+            : "Napi teljes mentés";
+
+        // Targeted runs are triggered by a deploy, which reports its own result to whoever started
+        // it. Announcing every one of those would train people to ignore the channel, so only the
+        // nightly run reports unconditionally.
+        if (!outcome.Success || !options.IsTargetedRun)
         {
-            AnsiConsole.Write(new Rule($"[bold red]{failures} mentés nem sikerült![/]").RuleStyle("red"));
-            logger.LogError("=== A biztonsági mentés {Count} hibával fejeződött be ===", failures);
+            await notifier.NotifyAsync(webhookUrl, outcome);
+        }
+
+        if (!outcome.Success)
+        {
+            AnsiConsole.Write(new Rule($"[bold red]{outcome.Failed} mentés nem sikerült![/]").RuleStyle("red"));
+            logger.LogError("=== A biztonsági mentés {Count} hibával fejeződött be ===", outcome.Failed);
             return false;
         }
 

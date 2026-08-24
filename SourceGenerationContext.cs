@@ -10,8 +10,34 @@ namespace MineBackup;
 [JsonSerializable(typeof(GoogleDriveModels.FileList))]
 [JsonSerializable(typeof(GoogleDriveModels.TokenResponse))]
 [JsonSerializable(typeof(GoogleDriveModels.UploadMetadata))]
+[JsonSerializable(typeof(DiscordModels.WebhookPayload))]
 internal partial class SourceGenerationContext : JsonSerializerContext
 {
+}
+
+public static class DiscordModels
+{
+    public class WebhookPayload
+    {
+        [JsonPropertyName("username")] public string Username { get; set; } = "MineBackup";
+        [JsonPropertyName("embeds")] public List<Embed> Embeds { get; set; } = [];
+    }
+
+    public class Embed
+    {
+        [JsonPropertyName("title")] public string Title { get; set; } = string.Empty;
+        [JsonPropertyName("description")] public string Description { get; set; } = string.Empty;
+        [JsonPropertyName("color")] public int Color { get; set; }
+        [JsonPropertyName("timestamp")] public string Timestamp { get; set; } = string.Empty;
+        [JsonPropertyName("fields")] public List<EmbedField> Fields { get; set; } = [];
+    }
+
+    public class EmbedField
+    {
+        [JsonPropertyName("name")] public string Name { get; set; } = string.Empty;
+        [JsonPropertyName("value")] public string Value { get; set; } = string.Empty;
+        [JsonPropertyName("inline")] public bool Inline { get; set; }
+    }
 }
 
 public static class GoogleDriveModels

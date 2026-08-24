@@ -24,6 +24,12 @@ public class AppConfig
 
     [JsonPropertyName("temp_zip_folder")]
     public string TempZipFolder { get; set; } = "temp";
+
+    /// <summary>
+    /// Discord webhook to report each run to. Empty disables notifications entirely.
+    /// </summary>
+    [JsonPropertyName("discord_webhook_url")]
+    public string DiscordWebhookUrl { get; set; } = string.Empty;
 }
 
 public class MySqlConfig
