@@ -1,5 +1,6 @@
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using MineBackup.Models;
 using MineBackup.Services;
 using NLog;
 using NLog.Extensions.Logging;
@@ -8,23 +9,38 @@ namespace MineBackup;
 
 class Program
 {
-    static async Task Main(string[] args)
+    static async Task<int> Main(string[] args)
     {
+        if (!CliOptions.TryParse(args, out var options, out var parseError))
+        {
+            Console.Error.WriteLine(parseError);
+            Console.Error.WriteLine();
+            Console.Error.WriteLine(CliOptions.HelpText);
+            return 2;
+        }
+
+        if (options.ShowHelp)
+        {
+            Console.WriteLine(CliOptions.HelpText);
+            return 0;
+        }
+
         var services = new ServiceCollection();
         ConfigureServices(services);
 
         using var serviceProvider = services.BuildServiceProvider();
-        
+
         var logger = serviceProvider.GetRequiredService<ILogger<Program>>();
         try
         {
             var manager = serviceProvider.GetRequiredService<BackupManager>();
-            await manager.RunAsync();
+            return await manager.RunAsync(options) ? 0 : 1;
         }
         catch (Exception ex)
         {
             logger.LogCritical(ex, "Alkalmazás váratlanul leállt.");
             Console.WriteLine($"Váratlan hiba: {ex.Message}");
+            return 1;
         }
         finally
         {

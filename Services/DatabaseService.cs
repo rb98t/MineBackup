@@ -15,13 +15,15 @@ public class DatabaseService
         _logger = logger;
     }
 
-    public async Task<string?> DumpDatabaseAsync(MySqlConfig config, string destDir, IProgress<int> progress)
+    public async Task<string?> DumpDatabaseAsync(MySqlConfig config, string destDir, IProgress<int> progress, string? namePrefix = null)
     {
         var dbName = config.DatabaseName ?? "UnknownDB";
         var timestamp = DateTime.Now.ToString("yyyy-MM-dd_HH-mm-ss");
-        var zipFilename = $"DB_{dbName}_{timestamp}.zip";
+        var prefix = string.IsNullOrEmpty(namePrefix) ? "DB" : $"{namePrefix}_DB";
+        var zipFilename = $"{prefix}_{dbName}_{timestamp}.zip";
         var zipPath = Path.Combine(destDir, zipFilename);
-        var tempSqlFile = Path.Combine(destDir, $"{dbName}_full_backup.sql");
+        // Timestamped so two runs dumping the same database cannot collide on the scratch file.
+        var tempSqlFile = Path.Combine(destDir, $"{dbName}_{timestamp}_full_backup.sql");
 
         try
         {
